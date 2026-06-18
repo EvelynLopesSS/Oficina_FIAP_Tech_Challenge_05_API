@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS Usuarios (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(200) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Videos (
+    id SERIAL PRIMARY KEY,
+    usuario_id INTEGER REFERENCES Usuarios(id),
+    filename VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'NA_FILA',
+    s3_video_key VARCHAR(255),
+    s3_zip_key VARCHAR(255),
+    data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hackathon-api-lb
+spec:
+  type: LoadBalancer
+  selector:
+    app: hackathon-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000

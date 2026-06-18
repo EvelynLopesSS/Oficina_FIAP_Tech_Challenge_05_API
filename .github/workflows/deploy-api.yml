@@ -1,0 +1,71 @@
+name: 🚀 CI/CD - Hackathon API
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: hackathon-eks-cluster
+
+jobs:
+  deploy-api:
+    name: 🐳 Build, Migrate & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🗄️ Executar Scripts SQL no RDS
+        env:
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          
+          echo "Rodando DDL (Criação de Tabelas)..."
+          psql -h ${{ secrets.DB_HOST }} -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -p ${{ secrets.DB_PORT }} -f database/01_create_database.sql || echo "Aviso: Tabelas já existem."
+
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+
+      - name: 📦 Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REPO }}
+
+      - name: 🐳 Build and Push Docker Image
+        run: |
+          docker build -t hackathon-api:latest .
+          docker tag hackathon-api:latest ${{ secrets.ECR_REPO }}:latest
+          docker push ${{ secrets.ECR_REPO }}:latest
+
+      - name: 🔌 Update Kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: 🤫 Create K8s Secrets dynamically
+        run: |
+          kubectl create secret generic hackathon-api-secrets \
+            --from-literal=DB_HOST="${{ secrets.DB_HOST }}" \
+            --from-literal=DB_PORT="${{ secrets.DB_PORT }}" \
+            --from-literal=DB_NAME="${{ secrets.DB_NAME }}" \
+            --from-literal=DB_USER="${{ secrets.DB_USER }}" \
+            --from-literal=DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            --from-literal=JWT_SECRET_KEY="${{ secrets.JWT_SECRET }}" \
+            --from-literal=AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            --from-literal=AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            --from-literal=AWS_SESSION_TOKEN="${{ secrets.AWS_SESSION_TOKEN }}" \
+            --from-literal=AWS_DEFAULT_REGION="${{ env.AWS_REGION }}" \
+            --from-literal=S3_BUCKET_NAME="${{ secrets.S3_BUCKET_NAME }}" \
+            --from-literal=SQS_QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: 🚀 Deploy App to K8s
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          sed -i "s|ECR_REPO_URL_PLACEHOLDER|${{ secrets.ECR_REPO }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          kubectl rollout restart deployment hackathon-api-deployment
