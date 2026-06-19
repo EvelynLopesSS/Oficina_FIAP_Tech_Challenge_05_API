@@ -50,35 +50,41 @@ def login():
 @app.route('/upload', methods=['POST'])
 @jwt_required()
 def upload_video():
-    current_user = get_jwt_identity()
-    user_email = current_user.get('email') 
-    
-    if 'video' not in request.files:
-        return jsonify({"error": "Nenhum arquivo de vídeo enviado"}), 400
+    try:
+        current_user = get_jwt_identity()
+        user_email = current_user.get('email') 
         
-    file = request.files['video']
-    if file.filename == '':
-        return jsonify({"error": "Nome de arquivo vazio"}), 400
+        if 'video' not in request.files:
+            return jsonify({"error": "Nenhum arquivo de vídeo enviado"}), 400
+            
+        file = request.files['video']
+        if file.filename == '':
+            return jsonify({"error": "Nome de arquivo vazio"}), 400
 
-    extensao = file.filename.split('.')[-1]
-    filename_unico = f"{uuid.uuid4().hex}.{extensao}"
-    
-    s3_key = upload_video_to_s3(file, filename_unico)
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO Videos (usuario_id, filename, status, s3_video_key) VALUES (%s, %s, %s, %s) RETURNING id",
-        (current_user['id'], file.filename, 'NA_FILA', s3_key)
-    )
-    video_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    send_to_sqs(video_id, s3_key, user_email) 
-    
-    return jsonify({"message": "Vídeo recebido com sucesso!", "video_id": video_id}), 202
+        extensao = file.filename.split('.')[-1]
+        filename_unico = f"{uuid.uuid4().hex}.{extensao}"
+        
+        s3_key = upload_video_to_s3(file, filename_unico)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO Videos (usuario_id, filename, status, s3_video_key) VALUES (%s, %s, %s, %s) RETURNING id",
+            (current_user['id'], file.filename, 'NA_FILA', s3_key)
+        )
+        video_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        send_to_sqs(video_id, s3_key, user_email) 
+        
+        return jsonify({"message": "Vídeo recebido com sucesso!", "video_id": video_id}), 202
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc() 
+        return jsonify({"error": str(e)}), 500
 @app.route('/videos', methods=['GET'])
 @jwt_required()
 def list_videos():
