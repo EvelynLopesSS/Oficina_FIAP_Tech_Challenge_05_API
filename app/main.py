@@ -14,12 +14,13 @@ jwt = JWTManager(app)
 def register():
     data = request.get_json()
     username = data.get('username')
+    email = data.get('email') 
     password = generate_password_hash(data.get('password'))
     
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO Usuarios (username, password) VALUES (%s, %s) RETURNING id", (username, password))
+        cur.execute("INSERT INTO Usuarios (username, email, password) VALUES (%s, %s, %s) RETURNING id", (username, email, password))
         user_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
@@ -36,13 +37,13 @@ def login():
     
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, password FROM Usuarios WHERE username = %s", (username,))
+    cur.execute("SELECT id, password, email FROM Usuarios WHERE username = %s", (username,))
     user = cur.fetchone()
     cur.close()
     conn.close()
     
     if user and check_password_hash(user[1], password):
-        access_token = create_access_token(identity={"id": user[0], "username": username})
+        access_token = create_access_token(identity={"id": user[0], "username": username, "email": user[2]}) 
         return jsonify(access_token=access_token), 200
     return jsonify({"message": "Credenciais inválidas"}), 401
 
@@ -50,6 +51,7 @@ def login():
 @jwt_required()
 def upload_video():
     current_user = get_jwt_identity()
+    user_email = current_user.get('email') 
     
     if 'video' not in request.files:
         return jsonify({"error": "Nenhum arquivo de vídeo enviado"}), 400
@@ -58,14 +60,11 @@ def upload_video():
     if file.filename == '':
         return jsonify({"error": "Nome de arquivo vazio"}), 400
 
-    # Gera um nome único para não sobrescrever vídeos no S3
     extensao = file.filename.split('.')[-1]
     filename_unico = f"{uuid.uuid4().hex}.{extensao}"
     
-    # 1. Faz upload pro S3
     s3_key = upload_video_to_s3(file, filename_unico)
     
-    # 2. Salva no Banco de Dados
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
@@ -77,11 +76,9 @@ def upload_video():
     cur.close()
     conn.close()
     
-    # 3. Manda pra Fila SQS pro Worker processar!
-    send_to_sqs(video_id, s3_key, current_user['username'])
+    send_to_sqs(video_id, s3_key, user_email) 
     
-    return jsonify({"message": "Vídeo recebido com sucesso e enviado para processamento!", "video_id": video_id}), 202
-
+    return jsonify({"message": "Vídeo recebido com sucesso!", "video_id": video_id}), 202
 @app.route('/videos', methods=['GET'])
 @jwt_required()
 def list_videos():
