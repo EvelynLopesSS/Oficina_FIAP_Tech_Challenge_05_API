@@ -1,8 +1,9 @@
 import os
 import uuid
+import psycopg2.extras
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from app.database import get_db_connection
 from app.aws_services import upload_video_to_s3, send_to_sqs, generate_presigned_url
 
@@ -35,24 +36,31 @@ def login():
     username = data.get('username')
     password = data.get('password')
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, password, email FROM Usuarios WHERE username = %s", (username,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-    
-    if user and check_password_hash(user[1], password):
-        access_token = create_access_token(identity={"id": user[0], "username": username, "email": user[2]}) 
-        return jsonify(access_token=access_token), 200
-    return jsonify({"message": "Credenciais inválidas"}), 401
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, password, email FROM Usuarios WHERE username = %s", (username,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if user and check_password_hash(user[1], password):
+            access_token = create_access_token(
+                identity=str(user[0]), 
+                additional_claims={"username": username, "email": user[2]}
+            )
+            return jsonify(access_token=access_token), 200
+        return jsonify({"error": "Credenciais inválidas"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 @jwt_required()
 def upload_video():
     try:
-        current_user = get_jwt_identity()
-        user_email = current_user.get('email') 
+        user_id = get_jwt_identity()
+        claims = get_jwt()
+        user_email = claims.get('email') 
         
         if 'video' not in request.files:
             return jsonify({"error": "Nenhum arquivo de vídeo enviado"}), 400
@@ -70,7 +78,7 @@ def upload_video():
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO Videos (usuario_id, filename, status, s3_video_key) VALUES (%s, %s, %s, %s) RETURNING id",
-            (current_user['id'], file.filename, 'NA_FILA', s3_key)
+            (user_id, file.filename, 'NA_FILA', s3_key)
         )
         video_id = cur.fetchone()[0]
         conn.commit()
@@ -80,30 +88,34 @@ def upload_video():
         send_to_sqs(video_id, s3_key, user_email) 
         
         return jsonify({"message": "Vídeo recebido com sucesso!", "video_id": video_id}), 202
-
+    
     except Exception as e:
         import traceback
-        traceback.print_exc() 
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 @app.route('/videos', methods=['GET'])
 @jwt_required()
 def list_videos():
-    current_user = get_jwt_identity()
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT id, filename, status, data_upload, s3_zip_key FROM Videos WHERE usuario_id = %s ORDER BY data_upload DESC", (current_user['id'],))
-    videos = cur.fetchall()
-    cur.close()
-    conn.close()
-    
-    # Se o status for CONCLUIDO, gera a URL de download do ZIP
-    for v in videos:
-        if v['status'] == 'CONCLUIDO' and v['s3_zip_key']:
-            v['download_url'] = generate_presigned_url(v['s3_zip_key'])
-        else:
-            v['download_url'] = None
-            
-    return jsonify(videos), 200
+    try:
+        user_id = get_jwt_identity() 
+        
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT id, filename, status, data_upload, s3_zip_key FROM Videos WHERE usuario_id = %s ORDER BY data_upload DESC", (user_id,))
+        videos = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        for v in videos:
+            if v['status'] == 'CONCLUIDO' and v['s3_zip_key']:
+                v['download_url'] = generate_presigned_url(v['s3_zip_key'])
+            else:
+                v['download_url'] = None
+                
+        return jsonify(videos), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
